@@ -10,12 +10,19 @@ def read_bible():
     https://www.mechon-mamre.org/dlk.htm
     """
     txt = u''
+    fr_ = 168  # discard first 200 chars of the first file,
     for i in range(1, 36):
         with open(os.path.join('k', f'k{i:02d}.htm'), encoding='windows-1255') as R:
             raw = R.read()
             soup = BeautifulSoup(raw, features='html.parser')
-            txt += soup.get_text()
-    return unicodedata.normalize("NFKD", txt)
+            txt += soup.find('body').get_text()[fr_:]
+            fr_ = 0  # for all other files - take everything.
+    txt = unicodedata.normalize("NFKD", txt)
+    # remove rare characters (less than 100 occurrences)
+    for c in set(txt):
+        if txt.count(c) < 100:
+            txt = txt.replace(c, '')
+    return txt
 
 
 def convert_utf8_to_tokens(txt):
@@ -26,8 +33,8 @@ def convert_utf8_to_tokens(txt):
     code
     dictionary
     """
-    u, idx, rev_idx, count = np.unique(list(txt), return_index=True, return_inverse=True, return_counts=True)
-    return rev_idx, u
+    dictionary, idx, rev_idx, count = np.unique(list(txt), return_index=True, return_inverse=True, return_counts=True)
+    return rev_idx, dictionary
 
 
 def code_to_text(code, dictionary):
