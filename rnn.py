@@ -15,13 +15,14 @@ rstr = ''.join(random.choice(string.digits + string.ascii_lowercase) for _ in ra
 parser = ArgumentParser()
 
 # defining the model
-parser.add_argument('--hidden',     type=int,   default=256,  help='number of hidden neurons in each layer')
-parser.add_argument('--num-layers', type=int,   default=2,    help='number of hiddne layers in the model')
+parser.add_argument('--rec-type',   type=str,   default='RNN',help='type of reccurent module (RNN/LSTM/GRU...)')
+parser.add_argument('--hidden',     type=int,   default=100,  help='number of hidden neurons in each layer')
+parser.add_argument('--num-layers', type=int,   default=1,    help='number of hiddne layers in the model')
 # defining the data
-parser.add_argument('--seq-len',    type=int,   default=1024, help='training sequence length (length of each mini batch')
-parser.add_argument('--batch',      type=int,   default=128,  help='batch size (number of concurrent sequences in each mini batch)')
+parser.add_argument('--seq-len',    type=int,   default=256,  help='training sequence length (length of each mini batch')
+parser.add_argument('--batch',      type=int,   default=1024, help='batch size (number of concurrent sequences in each mini batch)')
 # optimizer
-parser.add_argument('--lr',         type=float, default=0.25, help='learning rate for Adagrad optimizer')
+parser.add_argument('--lr',         type=float, default=0.5,  help='learning rate for Adagrad optimizer')
 # number of training epochs
 parser.add_argument('--epochs',     type=int,   default=100,  help='number of training epochs')
 parser.add_argument('--tag',        type=str,   default=rstr, help='unique tag to distinguish this run')
@@ -74,9 +75,9 @@ def eval(model, dictionary, tempreture=1.0, epoch=-1):
     with torch.no_grad():
         code = [torch.randint(low=0, high=dictionary.shape[0], size=(1, 1),
                               dtype=torch.long, device=torch.device('cuda'))]
-        h, c = None, None
+        hidden = None
         for i in range(100):
-            pred, h, c = model(code[-1].view(1, 1), h, c)
+            pred, hidden = model(code[-1].view(1, 1), hidden)
             # sample from the predicted probability
             prob = nnf.softmax(pred / tempreture, dim=-1)
             code.append(torch.multinomial(prob.flatten(), num_samples=1))
@@ -93,7 +94,8 @@ def main():
     # convert it to code + dictionary
     code, dictionary = hebrew.convert_utf8_to_tokens(bible)
 
-    model = LanguageModel(dictionary_size=len(dictionary), hidden_size=args.hidden, num_layers=args.num_layers)
+    model = LanguageModel(dictionary_size=len(dictionary), rec_type=args.rec_type,
+                          hidden_size=args.hidden, num_layers=args.num_layers)
     model.cuda()
     opt = torch.optim.Adagrad(params=model.parameters(), lr=args.lr, weight_decay=0)
 
@@ -117,20 +119,25 @@ def main():
     tloss = 0
     for epoch in range(args.epochs):
         data.restart()
-        h_0, c_0 = None, None  # start fresh
+        hidden = None  # start fresh
         pbar = tqdm.tqdm(data, file=sys.stdout,
                          desc=f'train {args.tag} ({epoch}) loss={tloss:.2f}')
         for i, (x, y) in enumerate(pbar):
             x = x.cuda()
             y = y.cuda(non_blocking=True)  # y txB
-            pred, h_0, c_0 = model(x, h_0, c_0)  # pred txBxC
+            pred, hidden = model(x, hidden)  # pred txBxC
             loss = nnf.cross_entropy(pred.permute(0, 2, 1), y, ignore_index=-1)  # CE expects the "prob" dimension to be second
             opt.zero_grad()
             loss.backward()
+            # clip gradients to range [-1, 1]
+            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.)
             opt.step()
             # stop gradients at hidden states
-            h_0.detach_()
-            c_0.detach_()
+            if isinstance(hidden, torch.Tensor):
+                hidden.detach_()
+            else:
+                for h_ in hidden:
+                    h_.detach_()
             rm = min(i/(i+1), 0.99)  # running mean capped at window size of 100
             tloss = rm * tloss + (1-rm) * loss.item()
             pbar.set_description(desc=f'train {args.tag} ({epoch}) loss={tloss:.2f}')
