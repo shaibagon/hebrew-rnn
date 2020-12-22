@@ -29,8 +29,10 @@ optional arguments:
 ### Play with a trained model on command line
 ```python
 import torch
+import torch.nn.functional as nnf
 import hebrew
 from model import LanguageModel
+
 # load checkpoint
 cp = torch.load('my-checkpoint.pth.tar')
 dictionary = cp['dictionary']
@@ -41,6 +43,8 @@ model = LanguageModel(dictionary_size=len(dictionary),
 model.load_state_dict(cp['sd'])
 model.eval()
 
+temprature = 0.01  # higher temperature = more randomness in sampling from posterior
+
 with torch.no_grad():
   # start generating from random 
   code = [torch.randint(low=0, high=dictionary.shape[0], size=(1, 1), dtype=torch.long)]
@@ -48,9 +52,9 @@ with torch.no_grad():
   for i in range(100):
     pred, h, c = model(code[-1].view(1, 1), h, c)
     # sample from the predicted probability
-    prob = nnf.softmax(pred / tempreture, dim=-1)
+    prob = nnf.softmax(pred / temprature, dim=-1)
     code.append(torch.multinomial(prob.flatten(), num_samples=1))
   # convert code to simple list
   code = [c_.item() for c_ in code]
-  print(f'eval {args.tag} ({epoch})=||{hebrew.code_to_text(code, dictionary)}||')
+  print(f'||{hebrew.code_to_text(code, dictionary)[::-1]}||')  # sometimes hebrew strings needs to be reversed for printing...
 ```
