@@ -1,5 +1,4 @@
-import random
-import string
+import glob
 import sys
 from argparse import ArgumentParser
 
@@ -11,25 +10,33 @@ from torch.utils.data import IterableDataset
 import hebrew
 from model import LanguageModel
 
-rstr = ''.join(random.choice(string.digits + string.ascii_lowercase) for _ in range(6))
 parser = ArgumentParser()
 
 # defining the model
-parser.add_argument('--rec-type',   type=str,   default='RNN',help='type of reccurent module (RNN/LSTM/GRU...)')
-parser.add_argument('--hidden',     type=int,   default=100,  help='number of hidden neurons in each layer')
-parser.add_argument('--num-layers', type=int,   default=1,    help='number of hiddne layers in the model')
+parser.add_argument('--rec-type',   type=str,   default='LSTM',help='type of reccurent module (RNN/LSTM/GRU...)')
+parser.add_argument('--hidden',     type=int,   default=512,  help='number of hidden neurons in each layer')
+parser.add_argument('--num-layers', type=int,   default=2,    help='number of hiddne layers in the model')
 # defining the data
-parser.add_argument('--seq-len',    type=int,   default=256,  help='training sequence length (length of each mini batch')
-parser.add_argument('--batch',      type=int,   default=1024, help='batch size (number of concurrent sequences in each mini batch)')
+parser.add_argument('--seq-len',    type=int,   default=100, help='training sequence length (length of each mini batch')
+parser.add_argument('--batch',      type=int,   default=100,  help='batch size (number of concurrent sequences in each mini batch)')
 # optimizer
-parser.add_argument('--lr',         type=float, default=0.5,  help='learning rate for Adagrad optimizer')
+parser.add_argument('--lr',         type=float, default=0.15,  help='learning rate for Adagrad optimizer')
 # number of training epochs
-parser.add_argument('--epochs',     type=int,   default=100,  help='number of training epochs')
-parser.add_argument('--tag',        type=str,   default=rstr, help='unique tag to distinguish this run')
+parser.add_argument('--epochs',     type=int,   default=5000,  help='number of training epochs')
+parser.add_argument('--tag',        type=str,   default=None, help='unique tag to distinguish this run')
 # warm start from checkpoint
 parser.add_argument('--warm',       type=str,   default=None, help='path to checkpoint to wrm-start from')
 
 args = parser.parse_args()
+
+if args.tag is None:
+    v = 0
+    while True:
+        args.tag = f'{args.rec_type}-h{args.hidden}-l{args.num_layers}-v{v:02d}'
+        if len(glob.glob(f'{args.tag}-checkpoint-*.pth.tar')) > 0:
+            v += 1
+        else:
+            break
 
 
 class BatchedSequence(IterableDataset):
@@ -39,7 +46,7 @@ class BatchedSequence(IterableDataset):
         self.n = len(self.seq)
         self.seq_len = seq_len
         self.batch_size = batch_size
-        self.overlap = 3  # relative overlap between batched sequences
+        self.overlap = 1  # relative overlap between batched sequences
         self.indices = None
         self.inputs_offset = torch.arange(0, self.seq_len, dtype=torch.long)[:, None]  # txB
         self.restart()
@@ -70,7 +77,7 @@ class BatchedSequence(IterableDataset):
             self.indices += self.seq_len
 
 
-def eval(model, dictionary, tempreture=1.0, epoch=-1):
+def eval(model, dictionary, temperature=1.0, epoch=-1):
     model.eval()
     with torch.no_grad():
         code = [torch.randint(low=0, high=dictionary.shape[0], size=(1, 1),
@@ -79,12 +86,13 @@ def eval(model, dictionary, tempreture=1.0, epoch=-1):
         for i in range(100):
             pred, hidden = model(code[-1].view(1, 1), hidden)
             # sample from the predicted probability
-            prob = nnf.softmax(pred / tempreture, dim=-1)
+            prob = nnf.softmax(pred / temperature, dim=-1)
             code.append(torch.multinomial(prob.flatten(), num_samples=1))
             # code.append(torch.argmax(pred, dim=-1))
         # convert code to simple list
         code = [c_.item() for c_ in code]
-        print(f'eval {args.tag} ({epoch})=||{hebrew.code_to_text(code, dictionary)}||')
+        print(f'eval {args.tag} ({epoch})=')
+        [print(f'||{t_}||') for t_ in hebrew.code_to_text(code, dictionary).split('\n')]
     model.train()
 
 
@@ -104,7 +112,7 @@ def main():
         cp = torch.load(args.warm)
         print(f'Warm-start from {args.warm}. using checkpoint\'s args for model')
         assert((dictionary == cp['dictionary']).all())
-        model = LanguageModel(dictionary_size=len(dictionary),
+        model = LanguageModel(dictionary_size=len(dictionary), rec_type=cp['args'].rec_type,
                               hidden_size=cp['args'].hidden, num_layers=cp['args'].num_layers)
         model.load_state_dict(cp['sd'])
         model.cuda()
@@ -112,7 +120,7 @@ def main():
         opt.load_state_dict(cp['opt'])
 
     # init
-    eval(model, dictionary, tempreture=0.1, epoch=-1)
+    eval(model, dictionary, temperature=0.1, epoch=-1)
 
     data = BatchedSequence(code, seq_len=args.seq_len, batch_size=args.batch)
 
@@ -129,8 +137,8 @@ def main():
             loss = nnf.cross_entropy(pred.permute(0, 2, 1), y, ignore_index=-1)  # CE expects the "prob" dimension to be second
             opt.zero_grad()
             loss.backward()
-            # clip gradients to range [-1, 1]
-            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.)
+            # clip gradients to range [-5, 5]
+            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=5.)
             opt.step()
             # stop gradients at hidden states
             if isinstance(hidden, torch.Tensor):
@@ -142,11 +150,11 @@ def main():
             tloss = rm * tloss + (1-rm) * loss.item()
             pbar.set_description(desc=f'train {args.tag} ({epoch}) loss={tloss:.2f}')
         pbar.close()
-        eval(model, dictionary, tempreture=0.1, epoch=epoch)
-        if ((epoch + 1) % 50) == 0:
+        eval(model, dictionary, temperature=0.05, epoch=epoch)
+        if ((epoch + 1) % 1000) == 0:
             torch.save({'sd': model.state_dict(), 'opt': opt.state_dict(),
                         'dictionary': dictionary, 'args': args},
-                       f'{args.tag}-checkpoint-{epoch:05d}.pth.tar')
+                       f'{args.tag}-checkpoint-{epoch + 1:05d}.pth.tar')
 
 
 if __name__ == '__main__':

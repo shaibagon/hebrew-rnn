@@ -38,23 +38,25 @@ cp = torch.load('my-checkpoint.pth.tar')
 dictionary = cp['dictionary']
 # make model based on the saved one
 model = LanguageModel(dictionary_size=len(dictionary),
-                      hidden_size=cp['args'].hidden, num_layers=cp['args'].num_layers)
+                      rec_type=cp['args'].rec_type,
+                      hidden_size=cp['args'].hidden, 
+                      num_layers=cp['args'].num_layers)
 # load the weights
 model.load_state_dict(cp['sd'])
 model.eval()
 
-temprature = 0.01  # higher temperature = more randomness in sampling from posterior
+temperature = 0.01  # higher temperature = more randomness in sampling from posterior
 
 with torch.no_grad():
   # start generating from random 
   code = [torch.randint(low=0, high=dictionary.shape[0], size=(1, 1), dtype=torch.long)]
-  h, c = None, None
+  h = None
   for i in range(100):
-    pred, h, c = model(code[-1].view(1, 1), h, c)
+    pred, h = model(code[-1].view(1, 1), h)
     # sample from the predicted probability
-    prob = nnf.softmax(pred / temprature, dim=-1)
+    prob = nnf.softmax(pred / temperature, dim=-1)
     code.append(torch.multinomial(prob.flatten(), num_samples=1))
   # convert code to simple list
   code = [c_.item() for c_ in code]
-  print(f'||{hebrew.code_to_text(code, dictionary)[::-1]}||')  # sometimes hebrew strings needs to be reversed for printing...
+  [print(f'||{t_[::-1]}||') for t_ in hebrew.code_to_text(code, dictionary).split('\n')]  # sometimes hebrew strings needs to be reversed for printing...
 ```

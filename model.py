@@ -8,7 +8,7 @@ class LanguageModel(nn.Module):
         rec_module = getattr(nn, rec_type)
         self.embed = nn.Embedding(num_embeddings=dictionary_size, embedding_dim=hidden_size)
         self.rec = rec_module(input_size=hidden_size, hidden_size=hidden_size, num_layers=num_layers,
-                              bias=True, batch_first=False, dropout=0.1, bidirectional=False)
+                              bias=True, batch_first=False, dropout=0.5, bidirectional=False)
         # final output layer
         self.fc = nn.Linear(in_features=hidden_size, out_features=dictionary_size, bias=False)
 

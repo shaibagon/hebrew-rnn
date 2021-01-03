@@ -34,6 +34,7 @@ def convert_utf8_to_tokens(txt):
     dictionary
     """
     dictionary, idx, rev_idx, count = np.unique(list(txt), return_index=True, return_inverse=True, return_counts=True)
+    print(f'\tReading text: got {len(rev_idx)} total chars, and {len(dictionary)} uniq.')
     return rev_idx, dictionary
 
 
